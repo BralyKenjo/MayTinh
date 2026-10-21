@@ -4,6 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KolibriOS - Máy ảo trên Web</title>
+    
+    <!-- ⚠️ QUAN TRỌNG: Script này phải nằm ĐẦU TIÊN trong <head> -->
+    <!-- Nó tạo COOP/COEP headers để bật SharedArrayBuffer trên GitHub Pages -->
+    <script src="coi-serviceworker.js"></script>
+    
     <style>
         * { box-sizing: border-box; }
         body { 
@@ -24,6 +29,7 @@
             padding: 10px;
             max-width: 100%;
             overflow: auto;
+            min-height: 200px;
         }
         #screen_container > div {
             white-space: pre;
@@ -49,6 +55,37 @@
         }
         #status.error { color: #f48771; background: #3a1d1d; }
         #status.ok { color: #4ec9b0; }
+        #status.warn { color: #dcdcaa; background: #3a3520; }
+        #controls {
+            margin-top: 10px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        button:hover { background: #1177bb; }
+        button:active { background: #094771; }
+        #debug {
+            margin-top: 10px;
+            padding: 8px 16px;
+            background: #1e1e1e;
+            border: 1px solid #333;
+            border-radius: 4px;
+            font-size: 11px;
+            color: #888;
+            font-family: monospace;
+            max-width: 100%;
+            word-wrap: break-word;
+        }
     </style>
 </head>
 <body>
@@ -60,47 +97,79 @@
         <canvas style="display: none"></canvas>
     </div>
     
-    <div id="status">⏳ Đang tải thư viện v86...</div>
+    <div id="status">⏳ Đang khởi tạo...</div>
+    
+    <div id="controls">
+        <button id="btnReload">🔄 Khởi động lại máy ảo</button>
+    </div>
+    
+    <div id="debug"></div>
 
     <script src="libv86.js"></script>
     <script>
         const statusEl = document.getElementById("status");
+        const debugEl = document.getElementById("debug");
         
         function setStatus(msg, type) {
             statusEl.textContent = msg;
             statusEl.className = type || "";
         }
         
-        // Bắt lỗi toàn cục để hiển thị lên màn hình
+        // Hiển thị thông tin môi trường để debug
+        function updateDebug() {
+            const isolated = window.crossOriginIsolated ? "✅ CÓ" : "❌ KHÔNG";
+            const sab = (typeof SharedArrayBuffer !== "undefined") ? "✅ CÓ" : "❌ KHÔNG";
+            debugEl.textContent = 
+                `Cross-Origin Isolated: ${isolated}\n` +
+                `SharedArrayBuffer: ${sab}\n` +
+                `Service Worker: ${navigator.serviceWorker ? "✅ CÓ" : "❌ KHÔNG"}`;
+        }
+        updateDebug();
+        
+        // Lắng nghe sự kiện isolation thay đổi (sau khi coi-serviceworker reload)
+        document.addEventListener("crossoriginisolated", updateDebug);
+        
         window.addEventListener("error", (e) => {
             setStatus("❌ Lỗi: " + (e.message || e), "error");
         });
         
-        // Tự nhận diện tên class (V86 với bản mới, V86Starter với bản cũ)
-        const VMClass = (typeof V86 !== "undefined") ? V86 
-                      : (typeof V86Starter !== "undefined") ? V86Starter 
-                      : null;
+        // Cảnh báo nếu SharedArrayBuffer không có
+        if (typeof SharedArrayBuffer === "undefined") {
+            setStatus("⚠️ Thiếu SharedArrayBuffer — máy ảo sẽ chậm/bất ổn định. Kiểm tra coi-serviceworker.js.", "warn");
+        }
         
-        if (!VMClass) {
-            setStatus("❌ Không tìm thấy thư viện v86. Kiểm tra file libv86.js đã upload chưa.", "error");
-        } else {
+        let emulator = null;
+        let bootTimeout = null;
+        let ready = false;
+        
+        function startVM() {
+            if (bootTimeout) clearTimeout(bootTimeout);
+            ready = false;
+            
+            const VMClass = (typeof V86 !== "undefined") ? V86 
+                          : (typeof V86Starter !== "undefined") ? V86Starter 
+                          : null;
+            
+            if (!VMClass) {
+                setStatus("❌ Không tìm thấy thư viện v86. Kiểm tra file libv86.js.", "error");
+                return;
+            }
+            
             setStatus("⏳ Đang khởi tạo máy ảo...");
             
             try {
-                const emulator = new VMClass({
-                    // ⚠️ Nếu báo lỗi tải wasm, đổi thành "v86.wasm.bin" và đổi tên file trên GitHub
+                emulator = new VMClass({
                     wasm_path: "v86.wasm",
                     
-                    // KolibriOS cần nhiều RAM hơn FreeDOS (có giao diện đồ họa)
-                    memory_size: 64 * 1024 * 1024,     // 64 MB
-                    vga_memory_size: 8 * 1024 * 1024,  // 8 MB
+                    // Tăng RAM cho KolibriOS — GUI cần nhiều bộ nhớ hơn FreeDOS
+                    memory_size: 128 * 1024 * 1024,     // 128 MB
+                    vga_memory_size: 8 * 1024 * 1024,   // 8 MB
                     
                     screen_container: document.getElementById("screen_container"),
                     
                     bios: { url: "seabios.bin" },
                     vga_bios: { url: "vgabios.bin" },
                     
-                    // KolibriOS là floppy image 1.44MB → dùng "fda"
                     fda: { 
                         url: "kolibri.img",
                         async: true
@@ -109,7 +178,6 @@
                     autostart: true,
                 });
                 
-                // Theo dõi trạng thái tải file
                 emulator.add_listener("download-progress", (e) => {
                     if (e.file_name && e.file_size) {
                         const pct = Math.round((e.loaded / e.file_size) * 100);
@@ -122,14 +190,39 @@
                 });
                 
                 emulator.add_listener("emulator-ready", () => {
-                    setStatus("✅ KolibriOS đã sẵn sàng. Nhấn vào màn hình để dùng.", "ok");
+                    ready = true;
+                    if (bootTimeout) clearTimeout(bootTimeout);
+                    setStatus("✅ Máy ảo đã khởi động. Chờ KolibriOS hiện desktop (10-20 giây)...", "ok");
                 });
                 
+                // Timeout cảnh báo nếu quá lâu không thấy tín hiệu ready
+                bootTimeout = setTimeout(() => {
+                    if (!ready) {
+                        setStatus("⚠️ Máy ảo chưa phản hồi sau 30 giây. Có thể do thiếu RAM hoặc image lỗi. Thử nhấn 'Khởi động lại'.", "warn");
+                    }
+                }, 30000);
+                
             } catch (err) {
-                setStatus("❌ Không khởi tạo được máy ảo: " + err.message, "error");
+                setStatus("❌ Không khởi tạo được: " + err.message, "error");
                 console.error(err);
             }
         }
+        
+        // Nút khởi động lại
+        document.getElementById("btnReload").addEventListener("click", () => {
+            if (emulator && typeof emulator.destroy === "function") {
+                try { emulator.destroy(); } catch(e) {}
+            }
+            emulator = null;
+            // Reset canvas
+            const canvas = document.querySelector("#screen_container canvas");
+            if (canvas) canvas.style.display = "none";
+            // Chờ 1 chút rồi start lại
+            setTimeout(startVM, 200);
+        });
+        
+        // Khởi động
+        startVM();
     </script>
 </body>
 </html>
