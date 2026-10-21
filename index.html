@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KolibriOS - Máy ảo trên Web</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { 
+            background: #1a1a1a; 
+            color: #eee; 
+            font-family: sans-serif; 
+            margin: 0; 
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h2 { color: #4ec9b0; margin: 10px 0; font-size: 18px; }
+        #screen_container {
+            background: #000;
+            border: 2px solid #4ec9b0;
+            border-radius: 6px;
+            padding: 10px;
+            max-width: 100%;
+            overflow: auto;
+        }
+        #screen_container > div {
+            white-space: pre;
+            font: 14px monospace;
+            line-height: 14px;
+            color: #0f0;
+        }
+        #screen_container canvas {
+            max-width: 100%;
+            height: auto;
+            image-rendering: pixelated;
+        }
+        #status {
+            margin-top: 10px;
+            padding: 8px 16px;
+            background: #252526;
+            border-radius: 4px;
+            font-size: 13px;
+            color: #808080;
+            max-width: 100%;
+            word-wrap: break-word;
+            text-align: center;
+        }
+        #status.error { color: #f48771; background: #3a1d1d; }
+        #status.ok { color: #4ec9b0; }
+    </style>
+</head>
+<body>
+    <h2>🐧 KolibriOS Virtual Machine</h2>
+    
+    <!-- KHUNG HIỂN THỊ: CẤU TRÚC NÀY PHẢI GIỮ NGUYÊN -->
+    <div id="screen_container">
+        <div style="white-space: pre; font: 14px monospace; line-height: 14px"></div>
+        <canvas style="display: none"></canvas>
+    </div>
+    
+    <div id="status">⏳ Đang tải thư viện v86...</div>
+
+    <script src="libv86.js"></script>
+    <script>
+        const statusEl = document.getElementById("status");
+        
+        function setStatus(msg, type) {
+            statusEl.textContent = msg;
+            statusEl.className = type || "";
+        }
+        
+        // Bắt lỗi toàn cục để hiển thị lên màn hình
+        window.addEventListener("error", (e) => {
+            setStatus("❌ Lỗi: " + (e.message || e), "error");
+        });
+        
+        // Tự nhận diện tên class (V86 với bản mới, V86Starter với bản cũ)
+        const VMClass = (typeof V86 !== "undefined") ? V86 
+                      : (typeof V86Starter !== "undefined") ? V86Starter 
+                      : null;
+        
+        if (!VMClass) {
+            setStatus("❌ Không tìm thấy thư viện v86. Kiểm tra file libv86.js đã upload chưa.", "error");
+        } else {
+            setStatus("⏳ Đang khởi tạo máy ảo...");
+            
+            try {
+                const emulator = new VMClass({
+                    // ⚠️ Nếu báo lỗi tải wasm, đổi thành "v86.wasm.bin" và đổi tên file trên GitHub
+                    wasm_path: "v86.wasm",
+                    
+                    // KolibriOS cần nhiều RAM hơn FreeDOS (có giao diện đồ họa)
+                    memory_size: 64 * 1024 * 1024,     // 64 MB
+                    vga_memory_size: 8 * 1024 * 1024,  // 8 MB
+                    
+                    screen_container: document.getElementById("screen_container"),
+                    
+                    bios: { url: "seabios.bin" },
+                    vga_bios: { url: "vgabios.bin" },
+                    
+                    // KolibriOS là floppy image 1.44MB → dùng "fda"
+                    fda: { 
+                        url: "kolibri.img",
+                        async: true
+                    },
+                    
+                    autostart: true,
+                });
+                
+                // Theo dõi trạng thái tải file
+                emulator.add_listener("download-progress", (e) => {
+                    if (e.file_name && e.file_size) {
+                        const pct = Math.round((e.loaded / e.file_size) * 100);
+                        setStatus(`⏳ Đang tải ${e.file_name}: ${pct}%`);
+                    }
+                });
+                
+                emulator.add_listener("download-error", (e) => {
+                    setStatus(`❌ Không tải được: ${e.file_name || "unknown"}`, "error");
+                });
+                
+                emulator.add_listener("emulator-ready", () => {
+                    setStatus("✅ KolibriOS đã sẵn sàng. Nhấn vào màn hình để dùng.", "ok");
+                });
+                
+            } catch (err) {
+                setStatus("❌ Không khởi tạo được máy ảo: " + err.message, "error");
+                console.error(err);
+            }
+        }
+    </script>
+</body>
+</html>
